@@ -33,7 +33,8 @@ class Chromosome:
         Decode the chromosome into a feasible schedule.
         
         This converts the operation sequence into a schedule with
-        start and end times for each operation, following job precedence constraints.
+        start and end times for each operation, respecting both
+        job precedence and machine capacity constraints.
         
         Args:
             instance: The problem instance to decode against (used for validation)
@@ -48,75 +49,116 @@ class Chromosome:
         job_ids = set(op.job_id for op in operations)
         machine_ids = set(op.machine_id for op in operations)
         
-        # Keep track of when each machine is available
+        # Keep track of when each machine will be free
         machine_availability = {m: 0 for m in machine_ids}
         
-        # Dictionary to track the last scheduled operation's end time for each job
-        job_last_end_times = {j: {} for j in job_ids}  # {job_id: {machine_id: end_time}}
+        # Track the last scheduled operation's end time for each job
+        job_last_op_end_times = {j: 0 for j in job_ids}
         
-        # Get operations by job and sort by machine_id to match validation logic
-        job_operations = {j: [] for j in job_ids}
+        # Dictionary to map job and machine to operation
+        # This helps track machine sequence within each job
+        job_machine_ops = {j: {} for j in job_ids}
         for op in operations:
-            job_operations[op.job_id].append(op)
-            
+            if op.machine_id not in job_machine_ops[op.job_id]:
+                job_machine_ops[op.job_id][op.machine_id] = op
+        
         # Sort operations within each job by machine_id (to match validation)
-        for j in job_ids:
-            job_operations[j].sort(key=lambda op: op.machine_id)
-            
+        scheduled_ops = []
+        machine_schedules = {m: [] for m in machine_ids}
+        
         # Process operations in the order given by the chromosome
         for op in operations:
-            # The operation's job id and machine id
+            # Get the job and machine IDs
             job_id = op.job_id
             machine_id = op.machine_id
             
-            # Get when the machine will be available
+            # Determine the earliest start time based on job precedence
+            # The operation can't start until its job's previous operations are done
+            job_ready_time = job_last_op_end_times.get(job_id, 0)
+            
+            # Determine the earliest start time based on machine availability
             machine_ready_time = machine_availability.get(machine_id, 0)
-            
-            # Calculate when this job's preceding operation (by machine_id) completes
-            job_ready_time = 0
-            
-            # Get all machines for this job in sorted order
-            job_machines = sorted([o.machine_id for o in job_operations[job_id]])
-            
-            # Find the machine that comes before this one in the job's sequence
-            for prev_m in job_machines:
-                if prev_m >= machine_id:
-                    break
-                # If we have an end time for the previous machine, use it
-                if prev_m in job_last_end_times[job_id]:
-                    job_ready_time = max(job_ready_time, job_last_end_times[job_id][prev_m])
             
             # The operation can start as soon as both the job and machine are ready
             start_time = max(job_ready_time, machine_ready_time)
             
-            # Schedule the operation
+            # Set the operation's schedule
             op.start_time = start_time
             op.end_time = start_time + op.processing_time
             
-            # Update the machine availability
+            # Update when this job and machine will next be available
+            job_last_op_end_times[job_id] = op.end_time
             machine_availability[machine_id] = op.end_time
             
-            # Update the last end time for this job
-            job_last_end_times[job_id][machine_id] = op.end_time
+            # Add to the scheduled operations and the machine's schedule
+            scheduled_ops.append(op)
+            machine_schedules[machine_id].append(op)
+        
+        # After initial scheduling, we need to resolve any conflicts
+        # For each machine, ensure operations don't overlap
+        for machine_id in machine_ids:
+            # Sort operations on this machine by start time
+            machine_ops = machine_schedules[machine_id]
+            machine_ops.sort(key=lambda op: op.start_time)
             
-        # Verify operations in each job are scheduled in the correct order
-        # according to validation logic (sorted by machine_id)
-        for j in job_ids:
-            job_ops = [op for op in operations if op.job_id == j]
+            # Fix any overlaps
+            for i in range(1, len(machine_ops)):
+                prev_op = machine_ops[i-1]
+                curr_op = machine_ops[i]
+                
+                # If there's an overlap, push the current operation later
+                if curr_op.start_time < prev_op.end_time:
+                    # Adjust the current operation's times
+                    curr_op.start_time = prev_op.end_time
+                    curr_op.end_time = curr_op.start_time + curr_op.processing_time
+                    
+                    # Update when this job will be available next
+                    job_last_op_end_times[curr_op.job_id] = max(
+                        job_last_op_end_times[curr_op.job_id], 
+                        curr_op.end_time
+                    )
+        
+        # Now ensure job precedence constraints are met
+        # For each job, sort operations by machine_id (as validation does)
+        for job_id in job_ids:
+            job_ops = [op for op in scheduled_ops if op.job_id == job_id]
             job_ops.sort(key=lambda op: op.machine_id)
             
+            # Check precedence between operations
             for i in range(1, len(job_ops)):
                 prev_op = job_ops[i-1]
                 curr_op = job_ops[i]
                 
-                # Make sure current operation doesn't start before the previous one ends
+                # If current op starts before previous op ends, adjust it
                 if curr_op.start_time < prev_op.end_time:
                     curr_op.start_time = prev_op.end_time
                     curr_op.end_time = curr_op.start_time + curr_op.processing_time
-                    # Update machine availability too
-                    machine_availability[curr_op.machine_id] = curr_op.end_time
+                    
+                    # Need to check machine constraints again for this modified operation
+                    machine_id = curr_op.machine_id
+                    machine_ops = [op for op in scheduled_ops if op.machine_id == machine_id and op != curr_op]
+                    
+                    # Sort operations on this machine by start time
+                    machine_ops.sort(key=lambda op: op.start_time)
+                    
+                    # Find where our current op fits in this sequence
+                    insert_idx = 0
+                    while insert_idx < len(machine_ops) and machine_ops[insert_idx].start_time < curr_op.start_time:
+                        insert_idx += 1
+                    
+                    # Check if we need to adjust due to the operation before us
+                    if insert_idx > 0 and machine_ops[insert_idx-1].end_time > curr_op.start_time:
+                        curr_op.start_time = machine_ops[insert_idx-1].end_time
+                        curr_op.end_time = curr_op.start_time + curr_op.processing_time
+                    
+                    # Check if we need to adjust operations after us
+                    if insert_idx < len(machine_ops):
+                        next_op = machine_ops[insert_idx]
+                        if next_op.start_time < curr_op.end_time:
+                            next_op.start_time = curr_op.end_time
+                            next_op.end_time = next_op.start_time + next_op.processing_time
         
-        return operations
+        return scheduled_ops
 
 
 def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Operation]]:
