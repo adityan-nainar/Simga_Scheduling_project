@@ -173,6 +173,7 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
         Tuple of (metrics, scheduled_operations)
     """
     start_time = time.time()
+    max_retries = 3  # Number of times to retry if validation fails
     
     # Create a deep copy of the instance to avoid modifying the original
     copied_instance = deepcopy(instance)
@@ -180,84 +181,114 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
     if params is None:
         params = GAParams()
     
-    # Create a population of random chromosomes
-    population = _initialize_population(copied_instance, params.population_size)
-    
-    # Evaluate the initial population
-    for chromosome in population:
-        chromosome.evaluate(copied_instance)
-    
-    # Best solution found so far
-    best_solution = min(population, key=lambda c: c.makespan)
-    best_makespan = best_solution.makespan
-    
-    # History of best makespan values (for analysis)
-    history = [best_makespan]
-    
-    # Main GA loop
-    for generation in range(params.generations):
-        # Create the next generation
-        next_population = []
-        
-        # Elitism: keep the best solutions
-        elite_count = int(params.population_size * params.elitism_rate)
-        elite = sorted(population, key=lambda c: c.makespan)[:elite_count]
-        next_population.extend(elite)
-        
-        # Fill the rest with crossover and mutation
-        while len(next_population) < params.population_size:
-            # Selection
-            parent1 = _tournament_selection(population, params.tournament_size)
-            parent2 = _tournament_selection(population, params.tournament_size)
+    for retry in range(max_retries):
+        try:
+            # Create a population of random chromosomes
+            population = _initialize_population(copied_instance, params.population_size)
             
-            # Crossover
-            if random.random() < params.crossover_rate:
-                offspring = _crossover(parent1, parent2)
+            # Evaluate the initial population
+            for chromosome in population:
+                chromosome.evaluate(copied_instance)
+            
+            # Best solution found so far
+            best_solution = min(population, key=lambda c: c.makespan)
+            best_makespan = best_solution.makespan
+            
+            # History of best makespan values (for analysis)
+            history = [best_makespan]
+            
+            # Main GA loop
+            for generation in range(params.generations):
+                # Create the next generation
+                next_population = []
+                
+                # Elitism: keep the best solutions
+                elite_count = int(params.population_size * params.elitism_rate)
+                elite = sorted(population, key=lambda c: c.makespan)[:elite_count]
+                next_population.extend(elite)
+                
+                # Fill the rest with crossover and mutation
+                while len(next_population) < params.population_size:
+                    # Selection
+                    parent1 = _tournament_selection(population, params.tournament_size)
+                    parent2 = _tournament_selection(population, params.tournament_size)
+                    
+                    # Crossover
+                    if random.random() < params.crossover_rate:
+                        offspring = _crossover(parent1, parent2)
+                    else:
+                        # No crossover, just copy one parent
+                        offspring = Chromosome(deepcopy(parent1.operations))
+                    
+                    # Mutation
+                    if random.random() < params.mutation_rate:
+                        _mutate(offspring)
+                    
+                    # Evaluate the new solution
+                    offspring.evaluate(copied_instance)
+                    
+                    # Add to the next generation
+                    next_population.append(offspring)
+                
+                # Replace the current population
+                population = next_population
+                
+                # Update the best solution
+                current_best = min(population, key=lambda c: c.makespan)
+                if current_best.makespan < best_makespan:
+                    best_solution = current_best
+                    best_makespan = current_best.makespan
+                
+                # Record history
+                history.append(best_makespan)
+            
+            # Calculate CPU time
+            cpu_time = time.time() - start_time
+            
+            # Get the best solution
+            best_chromosome = min(population, key=lambda c: c.makespan)
+            
+            # If the best chromosome has infinite makespan, we have no valid solutions
+            if best_chromosome.makespan == float('inf'):
+                if retry < max_retries - 1:
+                    print(f"No valid solutions found in run {retry+1}, retrying...")
+                    continue
+                else:
+                    raise ValueError("Could not find a valid solution after multiple retries")
+                    
+            best_schedule = best_chromosome._decode(copied_instance)
+            
+            # Validate the schedule - this might raise exceptions that trigger a retry
+            validate_schedule(copied_instance, best_schedule)
+            
+            # Calculate metrics
+            metrics = calculate_metrics(copied_instance, best_schedule)
+            metrics["algorithm"] = "GA"
+            metrics["cpu_time"] = cpu_time
+            metrics["generations"] = params.generations
+            metrics["population_size"] = params.population_size
+            metrics["best_makespan_history"] = history
+            metrics["retries"] = retry
+            
+            # If we get here, we have a valid solution
+            return metrics, best_schedule
+            
+        except ValueError as e:
+            if retry < max_retries - 1:
+                print(f"Validation error on run {retry+1}: {str(e)}. Retrying...")
+                # Increase population size and generations for next retry
+                if params:
+                    params.population_size = int(params.population_size * 1.5)
+                    params.generations = int(params.generations * 1.5)
+                # Reset the random seed to get different results
+                random_seed = random.randint(1, 10000)
+                random.seed(random_seed)
+                np.random.seed(random_seed)
             else:
-                # No crossover, just copy one parent
-                offspring = Chromosome(deepcopy(parent1.operations))
-            
-            # Mutation
-            if random.random() < params.mutation_rate:
-                _mutate(offspring)
-            
-            # Evaluate the new solution
-            offspring.evaluate(copied_instance)
-            
-            # Add to the next generation
-            next_population.append(offspring)
-        
-        # Replace the current population
-        population = next_population
-        
-        # Update the best solution
-        current_best = min(population, key=lambda c: c.makespan)
-        if current_best.makespan < best_makespan:
-            best_solution = current_best
-            best_makespan = current_best.makespan
-        
-        # Record history
-        history.append(best_makespan)
+                raise ValueError(f"Failed to find a valid solution after {max_retries} retries: {str(e)}")
     
-    # Calculate CPU time
-    cpu_time = time.time() - start_time
-    
-    # Get the best solution
-    best_chromosome = min(population, key=lambda c: c.makespan)
-    best_schedule = best_chromosome._decode(copied_instance)
-    
-    # Validate the schedule
-    validate_schedule(copied_instance, best_schedule)
-    
-    # Calculate metrics
-    metrics = calculate_metrics(copied_instance, best_schedule)
-    metrics["algorithm"] = "GA"
-    metrics["cpu_time"] = cpu_time
-    metrics["generations"] = params.generations
-    metrics["population_size"] = params.population_size
-    metrics["best_makespan_history"] = history
-    
-    return metrics, best_schedule
+    # Should never reach here due to exception handling
+    raise ValueError("Could not find a valid solution")
 
 
 def _initialize_population(instance: Instance, population_size: int) -> List[Chromosome]:
