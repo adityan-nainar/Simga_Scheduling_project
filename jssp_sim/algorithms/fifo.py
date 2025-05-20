@@ -21,37 +21,21 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     """
     start_time = time.time()
     
-    # Create a deep copy of the operations to avoid modifying the original instance
-    operations = deepcopy(instance.operations)
-    
-    # Create a mapping to track which copied operation corresponds to which original operation
-    # and to determine the correct sequence
-    operation_mapping = {}
-    for i, original_op in enumerate(instance.operations):
-        for copied_op in operations:
-            if (original_op.job_id == copied_op.job_id and 
-                original_op.machine_id == copied_op.machine_id and
-                original_op.processing_time == copied_op.processing_time):
-                operation_mapping[copied_op] = i
-                break
+    # Make a deep copy of the instance to avoid modifying the original
+    copied_instance = deepcopy(instance)
     
     # Keep track of when each machine and job was last used
-    machine_availability = {m: 0 for m in range(instance.num_machines)}
-    job_availability = {j: 0 for j in range(instance.num_jobs)}
+    machine_availability = {m: 0 for m in range(copied_instance.num_machines)}
+    job_availability = {j: 0 for j in range(copied_instance.num_jobs)}
     
     # Scheduled operations list
     scheduled_ops = []
     
-    # Process operations in order of job ID
-    for job_id in range(instance.num_jobs):
-        # Get operations for this job
-        job_ops = [op for op in operations if op.job_id == job_id]
-        
-        # Sort operations based on their order in the original job
-        # For each job, the operations must be processed in a specific sequence
-        job_ops.sort(key=lambda op: operation_mapping[op])
-        
-        for op in job_ops:
+    # Process jobs in order of their ID (FIFO)
+    for job in copied_instance.jobs:
+        # Get all operations for this job
+        # The operations in job.operations are already in the correct sequence
+        for op in job.operations:
             # Calculate the earliest start time for this operation
             # It must wait for both the machine to be available and the previous operation in the job to finish
             earliest_start = max(machine_availability[op.machine_id], job_availability[op.job_id])
@@ -70,10 +54,10 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     cpu_time = time.time() - start_time
     
     # Validate the schedule
-    validate_schedule(instance, scheduled_ops)
+    validate_schedule(copied_instance, scheduled_ops)
     
     # Calculate metrics
-    metrics = calculate_metrics(instance, scheduled_ops)
+    metrics = calculate_metrics(copied_instance, scheduled_ops)
     metrics["algorithm"] = "FIFO"
     metrics["cpu_time"] = cpu_time
     
