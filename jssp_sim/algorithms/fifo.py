@@ -27,11 +27,14 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     # Keep track of when each machine is available
     machine_availability = {m: 0 for m in range(copied_instance.num_machines)}
     
-    # Create lists to hold the operations for each job
+    # Create lists to hold the operations for each job, sorted by machine_id
+    # This is critical because the validation function sorts by machine_id
     job_operations = []
     for job in copied_instance.jobs:
-        # Store the operations in their exact sequence
-        job_operations.append(list(job.operations))
+        # Get operations for this job and sort by machine_id
+        job_ops = list(job.operations)
+        job_ops.sort(key=lambda op: op.machine_id)
+        job_operations.append(job_ops)
     
     # List to hold all scheduled operations
     scheduled_ops = []
@@ -50,11 +53,17 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
             # Otherwise, need to wait for the previous operation in this job to finish
             prev_op_end_time = 0
             if scheduled_ops:
-                # Look for the last scheduled operation from this job
-                for scheduled_op in reversed(scheduled_ops):
-                    if scheduled_op.job_id == job_idx:
-                        prev_op_end_time = scheduled_op.end_time
-                        break
+                # Find the last scheduled operation from this job
+                job_scheduled_ops = [sop for sop in scheduled_ops if sop.job_id == job_idx]
+                if job_scheduled_ops:
+                    # Sort by machine_id to match validation logic
+                    job_scheduled_ops.sort(key=lambda sop: sop.machine_id)
+                    # Find position of current op in the machine order
+                    machine_idx = [sop.machine_id for sop in job_scheduled_ops + [op]].index(op.machine_id)
+                    if machine_idx > 0:
+                        # Get the end time of the previous operation by machine_id
+                        prev_op = job_scheduled_ops[machine_idx - 1]
+                        prev_op_end_time = prev_op.end_time
             
             # The operation can start as soon as both the previous operation in the job
             # and the required machine are available
