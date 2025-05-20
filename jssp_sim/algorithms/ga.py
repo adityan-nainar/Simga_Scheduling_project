@@ -18,57 +18,73 @@ class Chromosome:
         
     def evaluate(self, instance: Instance):
         """Evaluate the chromosome and calculate its fitness (makespan)."""
-        ops_copy = self._decode()
-        
         try:
+            ops_copy = self._decode(instance)
             metrics = calculate_metrics(instance, ops_copy)
             self.makespan = metrics["makespan"]
             return self.makespan
-        except ValueError:
+        except (ValueError, TypeError) as e:
             # Return a very high makespan for invalid schedules
             self.makespan = float('inf')
             return self.makespan
     
-    def _decode(self) -> List[Operation]:
+    def _decode(self, instance: Instance) -> List[Operation]:
         """
         Decode the chromosome into a feasible schedule.
         
         This converts the operation sequence into a schedule with
-        start and end times for each operation.
+        start and end times for each operation, following job precedence constraints.
+        
+        Args:
+            instance: The problem instance to decode against (used for validation)
+            
+        Returns:
+            List of scheduled operations
         """
+        # Make a deep copy of operations to avoid modifying the original
         operations = deepcopy(self.operations)
         
         # Extract job and machine count from operations
         job_ids = set(op.job_id for op in operations)
         machine_ids = set(op.machine_id for op in operations)
         
-        # Keep track of when each machine and job was last used
+        # Keep track of when each machine is available
         machine_availability = {m: 0 for m in machine_ids}
-        job_availability = {j: 0 for j in job_ids}
         
-        # Group operations by job
+        # Dictionary to track the last scheduled operation's end time for each job
+        job_last_end_times = {j: {} for j in job_ids}  # {job_id: {machine_id: end_time}}
+        
+        # Get operations by job and sort by machine_id to match validation logic
         job_operations = {j: [] for j in job_ids}
         for op in operations:
             job_operations[op.job_id].append(op)
-        
-        # Sort operations within each job by their machine order
+            
+        # Sort operations within each job by machine_id (to match validation)
         for j in job_ids:
-            job_operations[j].sort(key=lambda op: [op.machine_id])
-        
+            job_operations[j].sort(key=lambda op: op.machine_id)
+            
         # Process operations in the order given by the chromosome
         for op in operations:
-            # Get the job's operations
-            job_ops = job_operations[op.job_id]
+            # The operation's job id and machine id
+            job_id = op.job_id
+            machine_id = op.machine_id
             
-            # Find this operation's position in its job
-            job_pos = job_ops.index(op) if op in job_ops else -1
+            # Get when the machine will be available
+            machine_ready_time = machine_availability.get(machine_id, 0)
             
-            # Get the previous operation in the job, if any
-            prev_op = job_ops[job_pos - 1] if job_pos > 0 else None
+            # Calculate when this job's preceding operation (by machine_id) completes
+            job_ready_time = 0
             
-            # Calculate the earliest possible start time
-            job_ready_time = prev_op.end_time if prev_op else 0
-            machine_ready_time = machine_availability[op.machine_id]
+            # Get all machines for this job in sorted order
+            job_machines = sorted([o.machine_id for o in job_operations[job_id]])
+            
+            # Find the machine that comes before this one in the job's sequence
+            for prev_m in job_machines:
+                if prev_m >= machine_id:
+                    break
+                # If we have an end time for the previous machine, use it
+                if prev_m in job_last_end_times[job_id]:
+                    job_ready_time = max(job_ready_time, job_last_end_times[job_id][prev_m])
             
             # The operation can start as soon as both the job and machine are ready
             start_time = max(job_ready_time, machine_ready_time)
@@ -77,9 +93,28 @@ class Chromosome:
             op.start_time = start_time
             op.end_time = start_time + op.processing_time
             
-            # Update the job and machine availability times
-            job_availability[op.job_id] = op.end_time
-            machine_availability[op.machine_id] = op.end_time
+            # Update the machine availability
+            machine_availability[machine_id] = op.end_time
+            
+            # Update the last end time for this job
+            job_last_end_times[job_id][machine_id] = op.end_time
+            
+        # Verify operations in each job are scheduled in the correct order
+        # according to validation logic (sorted by machine_id)
+        for j in job_ids:
+            job_ops = [op for op in operations if op.job_id == j]
+            job_ops.sort(key=lambda op: op.machine_id)
+            
+            for i in range(1, len(job_ops)):
+                prev_op = job_ops[i-1]
+                curr_op = job_ops[i]
+                
+                # Make sure current operation doesn't start before the previous one ends
+                if curr_op.start_time < prev_op.end_time:
+                    curr_op.start_time = prev_op.end_time
+                    curr_op.end_time = curr_op.start_time + curr_op.processing_time
+                    # Update machine availability too
+                    machine_availability[curr_op.machine_id] = curr_op.end_time
         
         return operations
 
@@ -97,15 +132,18 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
     """
     start_time = time.time()
     
+    # Create a deep copy of the instance to avoid modifying the original
+    copied_instance = deepcopy(instance)
+    
     if params is None:
         params = GAParams()
     
     # Create a population of random chromosomes
-    population = _initialize_population(instance, params.population_size)
+    population = _initialize_population(copied_instance, params.population_size)
     
     # Evaluate the initial population
     for chromosome in population:
-        chromosome.evaluate(instance)
+        chromosome.evaluate(copied_instance)
     
     # Best solution found so far
     best_solution = min(population, key=lambda c: c.makespan)
@@ -142,7 +180,7 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
                 _mutate(offspring)
             
             # Evaluate the new solution
-            offspring.evaluate(instance)
+            offspring.evaluate(copied_instance)
             
             # Add to the next generation
             next_population.append(offspring)
@@ -164,13 +202,13 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
     
     # Get the best solution
     best_chromosome = min(population, key=lambda c: c.makespan)
-    best_schedule = best_chromosome._decode()
+    best_schedule = best_chromosome._decode(copied_instance)
     
     # Validate the schedule
-    validate_schedule(instance, best_schedule)
+    validate_schedule(copied_instance, best_schedule)
     
     # Calculate metrics
-    metrics = calculate_metrics(instance, best_schedule)
+    metrics = calculate_metrics(copied_instance, best_schedule)
     metrics["algorithm"] = "GA"
     metrics["cpu_time"] = cpu_time
     metrics["generations"] = params.generations
