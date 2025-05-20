@@ -24,9 +24,6 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     # Create a deep copy of the operations to avoid modifying the original instance
     operations = deepcopy(instance.operations)
     
-    # Sort operations by job_id (FIFO prioritizes jobs in order)
-    operations.sort(key=lambda op: op.job_id)
-    
     # Keep track of when each machine and job was last used
     machine_availability = {m: 0 for m in range(instance.num_machines)}
     job_availability = {j: 0 for j in range(instance.num_jobs)}
@@ -36,8 +33,12 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     
     # Process operations in order of job ID
     for job in instance.jobs:
-        # Sort operations of this job by their order in the job
+        # Get operations for this job and sort them by their position in the job
         job_ops = [op for op in operations if op.job_id == job.job_id]
+        
+        # Sort operations by their order in the job's sequence
+        # This is critical to maintain precedence relationships
+        job_ops.sort(key=lambda op: job.operations.index(op))
         
         for op in job_ops:
             # Calculate the earliest start time for this operation
