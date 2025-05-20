@@ -21,34 +21,59 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     """
     start_time = time.time()
     
-    # Make a deep copy of the instance to avoid modifying the original
+    # Create a deep copy of the instance to avoid modifying the original
     copied_instance = deepcopy(instance)
     
-    # Keep track of when each machine and job was last used
+    # Keep track of when each machine is available
     machine_availability = {m: 0 for m in range(copied_instance.num_machines)}
-    job_availability = {j: 0 for j in range(copied_instance.num_jobs)}
     
-    # Scheduled operations list
+    # Create lists to hold the operations for each job
+    job_operations = []
+    for job in copied_instance.jobs:
+        # Store the operations in their exact sequence
+        job_operations.append(list(job.operations))
+    
+    # List to hold all scheduled operations
     scheduled_ops = []
     
-    # Process jobs in order of their ID (FIFO)
-    for job in copied_instance.jobs:
-        # Get all operations for this job
-        # The operations in job.operations are already in the correct sequence
-        for op in job.operations:
-            # Calculate the earliest start time for this operation
-            # It must wait for both the machine to be available and the previous operation in the job to finish
-            earliest_start = max(machine_availability[op.machine_id], job_availability[op.job_id])
+    # Keep scheduling operations until all jobs are done
+    while any(job_ops for job_ops in job_operations):
+        for job_idx, job_ops in enumerate(job_operations):
+            if not job_ops:  # Skip empty job operation lists
+                continue
+                
+            # Get the next operation for this job
+            op = job_ops[0]
             
-            # Schedule the operation
+            # Calculate when this operation can start
+            # If it's the first operation in the job, can start as soon as machine is available
+            # Otherwise, need to wait for the previous operation in this job to finish
+            prev_op_end_time = 0
+            if scheduled_ops:
+                # Look for the last scheduled operation from this job
+                for scheduled_op in reversed(scheduled_ops):
+                    if scheduled_op.job_id == job_idx:
+                        prev_op_end_time = scheduled_op.end_time
+                        break
+            
+            # The operation can start as soon as both the previous operation in the job
+            # and the required machine are available
+            earliest_start = max(prev_op_end_time, machine_availability[op.machine_id])
+            
+            # Schedule this operation
             op.start_time = earliest_start
             op.end_time = earliest_start + op.processing_time
             
-            # Update machine and job availability
+            # Update machine availability
             machine_availability[op.machine_id] = op.end_time
-            job_availability[op.job_id] = op.end_time
             
+            # Add to scheduled operations and remove from job's pending operations
             scheduled_ops.append(op)
+            job_operations[job_idx].pop(0)
+            
+            # After scheduling one operation, break the loop to give other jobs a chance
+            # (FIFO prioritizes by job ID, but still processes operations in sequence)
+            break
     
     # Calculate CPU time
     cpu_time = time.time() - start_time
