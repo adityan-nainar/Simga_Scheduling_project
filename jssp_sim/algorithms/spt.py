@@ -22,12 +22,12 @@ def run_spt(instance: Instance) -> Tuple[Dict, List[Operation]]:
     """
     start_time = time.time()
     
-    # Create a deep copy of the operations to avoid modifying the original instance
-    operations = deepcopy(instance.operations)
+    # Create a deep copy of the instance to avoid modifying the original
+    copied_instance = deepcopy(instance)
     
     # Keep track of when each machine and job was last used
-    machine_availability = {m: 0 for m in range(instance.num_machines)}
-    job_availability = {j: 0 for j in range(instance.num_jobs)}
+    machine_availability = {m: 0 for m in range(copied_instance.num_machines)}
+    job_availability = {j: 0 for j in range(copied_instance.num_jobs)}
     
     # Scheduled operations list
     scheduled_ops = []
@@ -35,15 +35,16 @@ def run_spt(instance: Instance) -> Tuple[Dict, List[Operation]]:
     # Keep track of which operations have been scheduled
     scheduled_op_ids = set()
     
-    # Group operations by job
+    # Group operations by job and sort by machine_id to match the validation logic
     job_operations = {}
-    for job in instance.jobs:
-        job_operations[job.job_id] = [op for op in operations if op.job_id == job.job_id]
-        # Sort operations within each job by their machine order
-        job_operations[job.job_id].sort(key=lambda op: job.operations.index(op))
+    for job in copied_instance.jobs:
+        # Get operations for this job
+        job_operations[job.job_id] = list(job.operations)
+        # Sort operations by machine_id to match validation logic
+        job_operations[job.job_id].sort(key=lambda op: op.machine_id)
     
     # Continue until all operations are scheduled
-    while len(scheduled_op_ids) < len(operations):
+    while len(scheduled_op_ids) < len(copied_instance.operations):
         # Find all operations that are available to be scheduled
         available_ops = []
         
@@ -54,14 +55,39 @@ def run_spt(instance: Instance) -> Tuple[Dict, List[Operation]]:
             # The first operation in the list is the next one to be scheduled for this job
             next_op = ops[0]
             
-            # Check if this operation's predecessors have been scheduled
-            if len(scheduled_ops) == 0 or all(pred.end_time is not None for pred in scheduled_ops if pred.job_id == job_id):
-                # Operation is available
+            # Check if this is the first operation for this job or
+            # if all the preceding operations for this job have been scheduled
+            # For machine_id-ordered operations, we need to check the operation before this one
+            can_schedule = True
+            if scheduled_ops:
+                # Get all scheduled operations for this job
+                job_scheduled_ops = [sop for sop in scheduled_ops if sop.job_id == job_id]
+                if job_scheduled_ops:
+                    # Sort by machine_id to match validation logic
+                    job_scheduled_ops.sort(key=lambda sop: sop.machine_id)
+                    # Find position of current op in the machine order
+                    all_job_ops = job_scheduled_ops + ops
+                    all_job_ops.sort(key=lambda op: op.machine_id)
+                    machine_idx = [op.machine_id for op in all_job_ops].index(next_op.machine_id)
+                    
+                    # If this is not the first operation by machine_id,
+                    # the previous one must be scheduled
+                    if machine_idx > 0:
+                        prev_machine_id = all_job_ops[machine_idx - 1].machine_id
+                        # Check if the prev operation has been scheduled
+                        prev_op_scheduled = any(
+                            sop.job_id == job_id and sop.machine_id == prev_machine_id
+                            for sop in job_scheduled_ops
+                        )
+                        if not prev_op_scheduled:
+                            can_schedule = False
+            
+            if can_schedule:
                 available_ops.append(next_op)
         
         if not available_ops:
             # No operations are available, which shouldn't happen if the problem is well-formed
-            raise ValueError("No operations available to schedule")
+            raise ValueError("No operations available to schedule - job precedence constraints may be circular")
         
         # Sort available operations by processing time (SPT)
         available_ops.sort(key=lambda op: op.processing_time)
@@ -70,11 +96,28 @@ def run_spt(instance: Instance) -> Tuple[Dict, List[Operation]]:
         next_op = available_ops[0]
         
         # Calculate the earliest start time for this operation
-        # It must wait for both the machine to be available and any predecessor operation in the job to finish
-        earliest_start = max(
-            machine_availability[next_op.machine_id],
-            job_availability[next_op.job_id]
-        )
+        # It must wait for both the machine to be available and any predecessor in its job to finish
+        earliest_machine_time = machine_availability[next_op.machine_id]
+        
+        # Find the previous operation in this job by machine_id
+        prev_op_end_time = 0
+        job_scheduled_ops = [sop for sop in scheduled_ops if sop.job_id == next_op.job_id]
+        if job_scheduled_ops:
+            # Sort by machine_id
+            job_scheduled_ops.sort(key=lambda sop: sop.machine_id)
+            # Find the machine index of the current operation
+            all_machines = [sop.machine_id for sop in job_scheduled_ops + [next_op]]
+            all_machines.sort()
+            machine_idx = all_machines.index(next_op.machine_id)
+            # If not the first machine, get the end time of the previous operation
+            if machine_idx > 0:
+                prev_machine = all_machines[machine_idx - 1]
+                for sop in job_scheduled_ops:
+                    if sop.machine_id == prev_machine:
+                        prev_op_end_time = sop.end_time
+        
+        # The operation can start as soon as both the machine and any predecessor are ready
+        earliest_start = max(earliest_machine_time, prev_op_end_time)
         
         # Schedule the operation
         next_op.start_time = earliest_start
@@ -95,10 +138,10 @@ def run_spt(instance: Instance) -> Tuple[Dict, List[Operation]]:
     cpu_time = time.time() - start_time
     
     # Validate the schedule
-    validate_schedule(instance, scheduled_ops)
+    validate_schedule(copied_instance, scheduled_ops)
     
     # Calculate metrics
-    metrics = calculate_metrics(instance, scheduled_ops)
+    metrics = calculate_metrics(copied_instance, scheduled_ops)
     metrics["algorithm"] = "SPT"
     metrics["cpu_time"] = cpu_time
     
