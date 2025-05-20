@@ -24,6 +24,17 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     # Create a deep copy of the operations to avoid modifying the original instance
     operations = deepcopy(instance.operations)
     
+    # Create a mapping to track which copied operation corresponds to which original operation
+    # and to determine the correct sequence
+    operation_mapping = {}
+    for i, original_op in enumerate(instance.operations):
+        for copied_op in operations:
+            if (original_op.job_id == copied_op.job_id and 
+                original_op.machine_id == copied_op.machine_id and
+                original_op.processing_time == copied_op.processing_time):
+                operation_mapping[copied_op] = i
+                break
+    
     # Keep track of when each machine and job was last used
     machine_availability = {m: 0 for m in range(instance.num_machines)}
     job_availability = {j: 0 for j in range(instance.num_jobs)}
@@ -32,13 +43,13 @@ def run_fifo(instance: Instance) -> Tuple[Dict, List[Operation]]:
     scheduled_ops = []
     
     # Process operations in order of job ID
-    for job in instance.jobs:
-        # Get operations for this job and sort them by their position in the job
-        job_ops = [op for op in operations if op.job_id == job.job_id]
+    for job_id in range(instance.num_jobs):
+        # Get operations for this job
+        job_ops = [op for op in operations if op.job_id == job_id]
         
-        # Sort operations by their order in the job's sequence
-        # This is critical to maintain precedence relationships
-        job_ops.sort(key=lambda op: job.operations.index(op))
+        # Sort operations based on their order in the original job
+        # For each job, the operations must be processed in a specific sequence
+        job_ops.sort(key=lambda op: operation_mapping[op])
         
         for op in job_ops:
             # Calculate the earliest start time for this operation
