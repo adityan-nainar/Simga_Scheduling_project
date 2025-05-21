@@ -8,55 +8,13 @@ import json
 import io
 from base64 import b64encode
 import os
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 
 from jssp_sim.core.instance import Instance, Operation
 from jssp_sim.core.params import GAParams
 from jssp_sim.algorithms.fifo import run_fifo
 from jssp_sim.algorithms.spt import run_spt
 from jssp_sim.algorithms.ga import run_ga
-
-
-# Add a NumPy-compatible JSON encoder 
-class NumpyJSONEncoder(json.JSONEncoder):
-    """JSON encoder that handles NumPy data types."""
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.number):
-            return float(obj) if np.issubdtype(obj.dtype, np.floating) else int(obj)
-        return super().default(obj)
-
-
-# Helper function to convert NumPy types to standard Python types
-def convert_numpy_types(obj: Any) -> Any:
-    """
-    Recursively convert NumPy types to standard Python types.
-    
-    Args:
-        obj: Object to convert
-        
-    Returns:
-        Converted object with standard Python types
-    """
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.number):
-        return float(obj) if np.issubdtype(obj.dtype, np.floating) else int(obj)
-    elif isinstance(obj, dict):
-        return {k: convert_numpy_types(v) for k, v in obj.items()}
-    elif isinstance(obj, list) or isinstance(obj, tuple):
-        return [convert_numpy_types(i) for i in obj]
-    else:
-        return obj
 
 
 def main():
@@ -110,62 +68,64 @@ def main():
             )
             metrics_ga, schedule_ga = run_ga(instance, ga_params)
             
-            # Convert metrics to standard Python types
-            metrics_fifo = convert_numpy_types(metrics_fifo)
-            metrics_spt = convert_numpy_types(metrics_spt)
-            metrics_ga = convert_numpy_types(metrics_ga)
+            # Convert all NumPy values to Python primitives
+            def convert_schedule(schedule):
+                return [
+                    {
+                        "job_id": int(op.job_id),
+                        "machine_id": int(op.machine_id),
+                        "processing_time": int(op.processing_time),
+                        "start_time": int(op.start_time),
+                        "end_time": int(op.end_time)
+                    }
+                    for op in schedule
+                ]
+                
+            def convert_metrics(metrics):
+                result = {}
+                for k, v in metrics.items():
+                    if isinstance(v, dict):
+                        result[k] = convert_metrics(v)
+                    elif isinstance(v, list):
+                        result[k] = [float(x) if isinstance(x, (np.integer, np.floating)) else x for x in v]
+                    elif isinstance(v, (np.integer, np.floating)):
+                        result[k] = float(v) if isinstance(v, np.floating) else int(v)
+                    else:
+                        result[k] = v
+                return result
             
-            # Prepare the results dictionary with explicitly converted types
+            # Prepare results dictionary with only Python primitive types
             results = {
-                "instance": convert_numpy_types(instance.to_dict()),
+                "instance": {
+                    "jobs": int(instance.num_jobs),
+                    "machines": int(instance.num_machines),
+                    "min_time": int(instance.min_time),
+                    "max_time": int(instance.max_time)
+                },
                 "fifo": {
-                    "metrics": metrics_fifo,
-                    "schedule": [
-                        {
-                            "job_id": int(op.job_id),
-                            "machine_id": int(op.machine_id),
-                            "processing_time": int(op.processing_time),
-                            "start_time": int(op.start_time),
-                            "end_time": int(op.end_time)
-                        }
-                        for op in schedule_fifo
-                    ]
+                    "metrics": convert_metrics(metrics_fifo),
+                    "schedule": convert_schedule(schedule_fifo)
                 },
                 "spt": {
-                    "metrics": metrics_spt,
-                    "schedule": [
-                        {
-                            "job_id": int(op.job_id),
-                            "machine_id": int(op.machine_id),
-                            "processing_time": int(op.processing_time),
-                            "start_time": int(op.start_time),
-                            "end_time": int(op.end_time)
-                        }
-                        for op in schedule_spt
-                    ]
+                    "metrics": convert_metrics(metrics_spt),
+                    "schedule": convert_schedule(schedule_spt)
                 },
                 "ga": {
-                    "metrics": metrics_ga,
-                    "schedule": [
-                        {
-                            "job_id": int(op.job_id),
-                            "machine_id": int(op.machine_id),
-                            "processing_time": int(op.processing_time),
-                            "start_time": int(op.start_time),
-                            "end_time": int(op.end_time)
-                        }
-                        for op in schedule_ga
-                    ],
-                    "params": convert_numpy_types(ga_params.to_dict())
+                    "metrics": convert_metrics(metrics_ga),
+                    "schedule": convert_schedule(schedule_ga),
+                    "params": {
+                        "population_size": int(ga_params.population_size),
+                        "generations": int(ga_params.generations),
+                        "crossover_rate": float(ga_params.crossover_rate),
+                        "mutation_rate": float(ga_params.mutation_rate),
+                        "tournament_size": int(ga_params.tournament_size),
+                        "elitism_rate": float(ga_params.elitism_rate)
+                    }
                 }
             }
             
-            # Clear existing session state to avoid any lingering NumPy values
-            if "results" in st.session_state:
-                del st.session_state["results"]
-                
-            # Store results in session state after one more conversion to ensure no NumPy types remain
-            st.session_state.results = convert_numpy_types(results)
+            # Store results in session state
+            st.session_state.results = results
         
         st.success("Simulation completed!")
         
@@ -173,8 +133,6 @@ def main():
         display_results(st.session_state.results)
     elif "results" in st.session_state:
         # If we've already run a simulation, display the results
-        # Make sure the results are fully converted
-        st.session_state.results = convert_numpy_types(st.session_state.results)
         display_results(st.session_state.results)
     else:
         # First time loading the app
@@ -183,9 +141,6 @@ def main():
 
 def display_results(results: Dict):
     """Display the results of the simulation."""
-    # Convert any NumPy types that might still be present
-    results = convert_numpy_types(results)
-    
     # Create tabs for different views
     tab1, tab2, tab3 = st.tabs(["Metrics Comparison", "Gantt Charts", "Raw Data"])
     
@@ -201,9 +156,6 @@ def display_results(results: Dict):
 
 def display_metrics_comparison(results: Dict):
     """Display a comparison of metrics between algorithms."""
-    # Convert any NumPy types that might still be present
-    results = convert_numpy_types(results)
-    
     st.header("Metrics Comparison")
     
     # Extract metrics
@@ -281,9 +233,6 @@ def display_metrics_comparison(results: Dict):
 
 def display_gantt_charts(results: Dict):
     """Display Gantt charts for all algorithms."""
-    # Convert any NumPy types that might still be present
-    results = convert_numpy_types(results)
-    
     st.header("Gantt Charts")
     
     col1, col2, col3 = st.columns(3)
@@ -400,17 +349,6 @@ def get_image_download_link(fig):
 
 def display_raw_data(results: Dict):
     """Display the raw data for all algorithms."""
-    # Ensure all values are primitive Python types, not NumPy types
-    # Use json serialization and deserialization as a guaranteed way to convert all values
-    try:
-        # This double conversion ensures we get rid of all NumPy types
-        results_str = json.dumps(results, cls=NumpyJSONEncoder)
-        results = json.loads(results_str)
-    except TypeError as e:
-        st.error(f"Error converting results to JSON: {e}")
-        st.error("This is likely due to NumPy types in the results dictionary.")
-        return
-    
     st.header("Raw Data")
     
     # Create tabs for each algorithm
@@ -434,39 +372,43 @@ def display_raw_data(results: Dict):
     with download_tab:
         st.subheader("Download Results")
         
-        # Create JSON download - no need for custom encoder since we've already converted
-        json_data = json.dumps(results, indent=2)
-        st.download_button(
-            label="Download JSON",
-            data=json_data,
-            file_name="jssp_results.json",
-            mime="application/json"
-        )
-        
-        # Create CSV downloads
-        fifo_csv = fifo_df.to_csv(index=False)
-        st.download_button(
-            label="Download FIFO CSV",
-            data=fifo_csv,
-            file_name="fifo_schedule.csv",
-            mime="text/csv"
-        )
-        
-        spt_csv = spt_df.to_csv(index=False)
-        st.download_button(
-            label="Download SPT CSV",
-            data=spt_csv,
-            file_name="spt_schedule.csv",
-            mime="text/csv"
-        )
-        
-        ga_csv = ga_df.to_csv(index=False)
-        st.download_button(
-            label="Download GA CSV",
-            data=ga_csv,
-            file_name="ga_schedule.csv",
-            mime="text/csv"
-        )
+        try:
+            # Create JSON string
+            json_data = json.dumps(results, indent=2)
+            
+            st.download_button(
+                label="Download JSON",
+                data=json_data,
+                file_name="jssp_results.json",
+                mime="application/json"
+            )
+            
+            # Create CSV downloads
+            fifo_csv = fifo_df.to_csv(index=False)
+            st.download_button(
+                label="Download FIFO CSV",
+                data=fifo_csv,
+                file_name="fifo_schedule.csv",
+                mime="text/csv"
+            )
+            
+            spt_csv = spt_df.to_csv(index=False)
+            st.download_button(
+                label="Download SPT CSV",
+                data=spt_csv,
+                file_name="spt_schedule.csv",
+                mime="text/csv"
+            )
+            
+            ga_csv = ga_df.to_csv(index=False)
+            st.download_button(
+                label="Download GA CSV",
+                data=ga_csv,
+                file_name="ga_schedule.csv",
+                mime="text/csv"
+            )
+        except Exception as e:
+            st.error(f"Error generating downloads: {e}")
 
 
 if __name__ == "__main__":
