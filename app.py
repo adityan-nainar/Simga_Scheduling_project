@@ -231,37 +231,41 @@ def display_gantt_charts(results: Dict):
             )
 
 def create_gantt_chart(schedule: List[Dict[str, Any]], algorithm: str, makespan: int, num_machines: int) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(12, 6)) # Adjusted size
-    
-    job_ids = sorted(list(set(op["job_id"] for op in schedule if op.get("job_id") is not None)))
+    fig, ax = plt.subplots(figsize=(12, 6)) 
+    job_ids = sorted(list(set(op.get("job_id") for op in schedule if op.get("job_id") is not None)))
     num_jobs = len(job_ids)
     
-    # Use matplotlib.colormaps for modern API
-    cmap = plt.colormaps.get_cmap('tab20', num_jobs if num_jobs > 0 else 1)
-    job_colors = {job_id: cmap(i % cmap.N) for i, job_id in enumerate(job_ids)}
+    # Corrected: Use plt.colormaps['colormap_name'] and then sample from it.
+    # 'tab20' provides 20 distinct colors. If num_jobs > 20, colors will repeat.
+    try:
+        cmap = plt.colormaps['tab20'] 
+    except KeyError:
+        # Fallback if 'tab20' is somehow not available, though it should be standard.
+        cmap = plt.colormaps['viridis'] 
+        
+    job_colors = {job_id: cmap(i % cmap.N if cmap.N > 0 else 0) for i, job_id in enumerate(job_ids)}
 
     for op in schedule:
         job_id, machine_id = op.get("job_id"), op.get("machine_id")
         start, duration = op.get("start_time"), op.get("processing_time")
         if None not in [job_id, machine_id, start, duration]:
+            rect_facecolor = job_colors.get(job_id, cmap(0)) # Default to first color of cmap if job_id somehow not in job_colors
             rect = patches.Rectangle(
                 (start, machine_id - 0.4), duration, 0.8,
-                linewidth=1, edgecolor='black', facecolor=job_colors.get(job_id, 'gray'), alpha=0.7
+                linewidth=1, edgecolor='black', facecolor=rect_facecolor, alpha=0.7
             )
             ax.add_patch(rect)
             ax.text(start + duration / 2, machine_id, f"J{job_id}", ha='center', va='center', fontsize=8, color='black')
     
     ax.set_xlim(0, makespan * 1.05 if makespan > 0 else 10)
     ax.set_ylim(-0.5, num_machines - 0.5 if num_machines > 0 else 0.5)
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Machine")
+    ax.set_xlabel("Time"); ax.set_ylabel("Machine")
     if num_machines > 0:
         ax.set_yticks(range(num_machines))
         ax.set_yticklabels([f"M{i}" for i in range(num_machines)])
     ax.set_title(f"{algorithm} Schedule - Makespan: {makespan}")
     ax.grid(True, linestyle='--', alpha=0.6)
-    plt.tight_layout()
-    return fig
+    plt.tight_layout(); return fig
 
 def get_image_download_link(fig: plt.Figure) -> bytes:
     buf = io.BytesIO()
