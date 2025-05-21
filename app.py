@@ -17,6 +17,19 @@ from jssp_sim.algorithms.spt import run_spt
 from jssp_sim.algorithms.ga import run_ga
 
 
+# Add a NumPy-compatible JSON encoder 
+class NumpyJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles NumPy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 def main():
     st.set_page_config(
         page_title="JSSP-Sim: Job Shop Scheduling Simulator",
@@ -358,8 +371,8 @@ def display_raw_data(results: Dict):
     with download_tab:
         st.subheader("Download Results")
         
-        # Create JSON download
-        json_data = json.dumps(results, indent=2)
+        # Create JSON download - use the custom encoder
+        json_data = json.dumps(results, indent=2, cls=NumpyJSONEncoder)
         st.download_button(
             label="Download JSON",
             data=json_data,
