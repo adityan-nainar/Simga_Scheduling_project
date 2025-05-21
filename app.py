@@ -231,25 +231,27 @@ def display_gantt_charts(results: Dict):
             )
 
 def create_gantt_chart(schedule: List[Dict[str, Any]], algorithm: str, makespan: int, num_machines: int) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(12, 6)) 
+    fig, ax = plt.subplots(figsize=(12, 6))
     job_ids = sorted(list(set(op.get("job_id") for op in schedule if op.get("job_id") is not None)))
     num_jobs = len(job_ids)
     
-    # Corrected: Use plt.colormaps['colormap_name'] and then sample from it.
-    # 'tab20' provides 20 distinct colors. If num_jobs > 20, colors will repeat.
+    # Corrected: plt.colormaps.get_cmap() takes only the colormap name.
     try:
-        cmap = plt.colormaps['tab20'] 
-    except KeyError:
-        # Fallback if 'tab20' is somehow not available, though it should be standard.
-        cmap = plt.colormaps['viridis'] 
+        cmap = plt.colormaps.get_cmap('tab20') 
+    except KeyError: 
+        # Fallback if 'tab20' is somehow not available.
+        cmap = plt.colormaps.get_cmap('viridis') 
         
+    # Sample colors from the chosen colormap.
+    # cmap.N gives the number of defined colors in a discrete colormap like 'tab20'.
+    # If num_jobs > cmap.N, colors will cycle.
     job_colors = {job_id: cmap(i % cmap.N if cmap.N > 0 else 0) for i, job_id in enumerate(job_ids)}
 
     for op in schedule:
         job_id, machine_id = op.get("job_id"), op.get("machine_id")
         start, duration = op.get("start_time"), op.get("processing_time")
         if None not in [job_id, machine_id, start, duration]:
-            rect_facecolor = job_colors.get(job_id, cmap(0)) # Default to first color of cmap if job_id somehow not in job_colors
+            rect_facecolor = job_colors.get(job_id, cmap(0)) # Default to first color
             rect = patches.Rectangle(
                 (start, machine_id - 0.4), duration, 0.8,
                 linewidth=1, edgecolor='black', facecolor=rect_facecolor, alpha=0.7
