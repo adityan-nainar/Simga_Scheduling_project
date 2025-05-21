@@ -81,6 +81,26 @@ def main():
             )
             metrics_ga, schedule_ga = run_ga(instance, ga_params)
             
+            # Helper function to convert NumPy types to standard Python types
+            def convert_numpy_types(obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(i) for i in obj]
+                else:
+                    return obj
+            
+            # Convert metrics to standard Python types
+            metrics_fifo = convert_numpy_types(metrics_fifo)
+            metrics_spt = convert_numpy_types(metrics_spt)
+            metrics_ga = convert_numpy_types(metrics_ga)
+            
             # Store results in session state
             st.session_state.results = {
                 "instance": instance.to_dict(),
@@ -88,11 +108,11 @@ def main():
                     "metrics": metrics_fifo,
                     "schedule": [
                         {
-                            "job_id": op.job_id,
-                            "machine_id": op.machine_id,
-                            "processing_time": op.processing_time,
-                            "start_time": op.start_time,
-                            "end_time": op.end_time
+                            "job_id": int(op.job_id),
+                            "machine_id": int(op.machine_id),
+                            "processing_time": int(op.processing_time),
+                            "start_time": int(op.start_time),
+                            "end_time": int(op.end_time)
                         }
                         for op in schedule_fifo
                     ]
@@ -101,11 +121,11 @@ def main():
                     "metrics": metrics_spt,
                     "schedule": [
                         {
-                            "job_id": op.job_id,
-                            "machine_id": op.machine_id,
-                            "processing_time": op.processing_time,
-                            "start_time": op.start_time,
-                            "end_time": op.end_time
+                            "job_id": int(op.job_id),
+                            "machine_id": int(op.machine_id),
+                            "processing_time": int(op.processing_time),
+                            "start_time": int(op.start_time),
+                            "end_time": int(op.end_time)
                         }
                         for op in schedule_spt
                     ]
@@ -114,11 +134,11 @@ def main():
                     "metrics": metrics_ga,
                     "schedule": [
                         {
-                            "job_id": op.job_id,
-                            "machine_id": op.machine_id,
-                            "processing_time": op.processing_time,
-                            "start_time": op.start_time,
-                            "end_time": op.end_time
+                            "job_id": int(op.job_id),
+                            "machine_id": int(op.machine_id),
+                            "processing_time": int(op.processing_time),
+                            "start_time": int(op.start_time),
+                            "end_time": int(op.end_time)
                         }
                         for op in schedule_ga
                     ],
