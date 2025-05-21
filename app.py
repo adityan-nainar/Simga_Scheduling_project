@@ -6,7 +6,7 @@ import matplotlib.patches as patches
 import time
 import json
 import io
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 
 from jssp_sim.core.instance import Instance
 from jssp_sim.core.params import GAParams
@@ -20,21 +20,19 @@ class NumpyJSONEncoder(json.JSONEncoder):
         if isinstance(obj, np.integer):
             return int(obj)
         elif isinstance(obj, np.floating):
-            return float(obj)
+            return None if np.isnan(obj) else float(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         elif isinstance(obj, np.bool_):
             return bool(obj)
-        elif pd.isna(obj): # Handles np.nan, pd.NaT
+        elif pd.isna(obj):
             return None
-        # Add handling for Path objects if they ever appear, though unlikely here
-        # from pathlib import Path
-        # if isinstance(obj, Path):
-        #     return str(obj)
         return super().default(obj)
 
 def convert_numpy_to_python(data: Any) -> Any:
-    """Recursively converts NumPy types in a data structure to native Python types."""
+    """Recursively converts NumPy types and NaN to native Python types."""
+    if isinstance(data, (int, float, str, bool, type(None))):
+        return data 
     if isinstance(data, list) or isinstance(data, tuple):
         return [convert_numpy_to_python(item) for item in data]
     elif isinstance(data, dict):
@@ -42,15 +40,13 @@ def convert_numpy_to_python(data: Any) -> Any:
     elif isinstance(data, np.integer):
         return int(data)
     elif isinstance(data, np.floating):
-        return float(data)
+        return None if np.isnan(data) else float(data)
     elif isinstance(data, np.ndarray):
         return data.tolist()
-    elif isinstance(data, np.bool_): # NumPy bool
+    elif isinstance(data, np.bool_):
         return bool(data)
-    elif pd.isna(data): # This should catch np.nan, pd.NaT
+    elif pd.isna(data): # Should catch unhandled NaNs, NaTs
         return None
-    # elif isinstance(data, np.datetime64): # Handle if necessary
-    #     return str(data) # Or some other appropriate conversion
     return data
 
 def main():
@@ -65,22 +61,22 @@ def main():
     
     with st.sidebar:
         st.header("Problem Parameters")
-        jobs = st.number_input("Number of Jobs", min_value=2, max_value=100, value=20)
-        machines = st.number_input("Number of Machines", min_value=2, max_value=50, value=5)
-        min_time = st.number_input("Min Processing Time", min_value=1, value=1)
-        max_time = st.number_input("Max Processing Time", min_value=2, value=10)
+        jobs = int(st.number_input("Jobs", 2, 100, 20))
+        machines = int(st.number_input("Machines", 2, 50, 5))
+        min_time = int(st.number_input("Min Time", 1, value=1))
+        max_time = int(st.number_input("Max Time", 2, value=10))
         
         st.header("GA Parameters")
-        pop_size = st.number_input("Population Size", min_value=10, value=50)
-        generations = st.number_input("Generations", min_value=10, value=100)
-        crossover_rate = st.slider("Crossover Rate", min_value=0.0, max_value=1.0, value=0.8, step=0.05)
-        mutation_rate = st.slider("Mutation Rate", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
-        seed = st.number_input("Random Seed", min_value=0, max_value=9999, value=42)
+        pop_size = int(st.number_input("Population", 10, value=50))
+        generations = int(st.number_input("Generations", 10, value=100))
+        crossover_rate = float(st.slider("Crossover Rate", 0.0, 1.0, 0.8, 0.05))
+        mutation_rate = float(st.slider("Mutation Rate", 0.0, 1.0, 0.1, 0.05))
+        seed = int(st.number_input("Seed", 0, 9999, 42))
         run_button = st.button("Run Simulation", type="primary")
     
     if run_button:
         with st.spinner("Running simulation..."):
-            instance = Instance(jobs=jobs, machines=machines, min_time=min_time, max_time=max_time, seed=seed)
+            instance = Instance(jobs, machines, min_time, max_time, seed=seed)
             
             metrics_fifo_raw, schedule_fifo_raw = run_fifo(instance)
             metrics_spt_raw, schedule_spt_raw = run_spt(instance)
@@ -113,8 +109,8 @@ def main():
 
             results = {
                 "instance": {
-                    "jobs": int(instance.num_jobs), "machines": int(instance.num_machines),
-                    "min_time": int(instance.min_time), "max_time": int(instance.max_time)
+                    "jobs": jobs, "machines": machines,
+                    "min_time": min_time, "max_time": max_time
                 },
                 "fifo": {"metrics": metrics_fifo, "schedule": schedule_fifo},
                 "spt": {"metrics": metrics_spt, "schedule": schedule_spt},
@@ -146,65 +142,71 @@ def display_metrics_comparison(results: Dict):
     spt_metrics = results["spt"]["metrics"]
     ga_metrics = results["ga"]["metrics"]
 
-    # Data for internal use and charts (raw numbers)
-    metrics_data_numeric = {
-        "Metric": ["Makespan", "Total Flow Time", "Avg Flow Time", "Avg Machine Utilization", "CPU Time (s)"],
-        "FIFO": [
-            fifo_metrics["makespan"], fifo_metrics["total_flow_time"], fifo_metrics["avg_flow_time"],
-            fifo_metrics["avg_machine_utilization"], fifo_metrics["cpu_time"]
-        ],
-        "SPT": [
-            spt_metrics["makespan"], spt_metrics["total_flow_time"], spt_metrics["avg_flow_time"],
-            spt_metrics["avg_machine_utilization"], spt_metrics["cpu_time"]
-        ],
-        "GA": [
-            ga_metrics["makespan"], ga_metrics["total_flow_time"], ga_metrics["avg_flow_time"],
-            ga_metrics["avg_machine_utilization"], ga_metrics["cpu_time"]
-        ]
+    metrics_order = ["makespan", "total_flow_time", "avg_flow_time", "avg_machine_utilization", "cpu_time"]
+    metric_display_names = {
+        "makespan": "Makespan", "total_flow_time": "Total Flow Time", "avg_flow_time": "Avg Flow Time (2dp)",
+        "avg_machine_utilization": "Avg Machine Util. (2dp)", "cpu_time": "CPU Time (s, 4dp)"
     }
-    # metrics_df_numeric = pd.DataFrame(metrics_data_numeric) # If needed for checks or direct chart use
+    format_strings = {
+        "avg_flow_time": "{:.2f}", "avg_machine_utilization": "{:.2f}", "cpu_time": "{:.4f}"
+    }
 
-    # Data for st.dataframe (formatted strings)
-    display_df_data = {
-        "Metric": metrics_data_numeric["Metric"],
-        "FIFO": [
-            str(metrics_data_numeric["FIFO"][0]), str(metrics_data_numeric["FIFO"][1]),
-            f"{metrics_data_numeric['FIFO'][2]:.2f}", f"{metrics_data_numeric['FIFO'][3]:.2f}", f"{metrics_data_numeric['FIFO'][4]:.4f}"
-        ],
-        "SPT": [
-            str(metrics_data_numeric["SPT"][0]), str(metrics_data_numeric["SPT"][1]),
-            f"{metrics_data_numeric['SPT'][2]:.2f}", f"{metrics_data_numeric['SPT'][3]:.2f}", f"{metrics_data_numeric['SPT'][4]:.4f}"
-        ],
-        "GA": [
-            str(metrics_data_numeric["GA"][0]), str(metrics_data_numeric["GA"][1]),
-            f"{metrics_data_numeric['GA'][2]:.2f}", f"{metrics_data_numeric['GA'][3]:.2f}", f"{metrics_data_numeric['GA'][4]:.4f}"
-        ]
-    }
-    display_df = pd.DataFrame(display_df_data)
-    st.dataframe(display_df.set_index("Metric"), use_container_width=True) # Set index for better display
+    # Prepare data for display_df (all string, formatted)
+    display_data_for_table = {"Metric": [metric_display_names[m] for m in metrics_order]}
+    numeric_data_for_charts = {"Algorithm": ["FIFO", "SPT", "GA"]}
+    
+    all_metrics = {"FIFO": fifo_metrics, "SPT": spt_metrics, "GA": ga_metrics}
+
+    for algo_name, metrics_dict in all_metrics.items():
+        display_data_for_table[algo_name] = []
+        for metric_key in metrics_order:
+            val = metrics_dict.get(metric_key)
+            # For display table, always format, ensure it's a string
+            if val is None: display_data_for_table[algo_name].append("N/A")
+            elif metric_key in format_strings: display_data_for_table[algo_name].append(format_strings[metric_key].format(val))
+            else: display_data_for_table[algo_name].append(str(val))
+    
+    display_df = pd.DataFrame(display_data_for_table).set_index("Metric")
+    st.dataframe(display_df, use_container_width=True)
+
+    # Prepare numeric data for charts
+    numeric_data_for_charts["Makespan"] = [all_metrics[algo]["makespan"] for algo in ["FIFO", "SPT", "GA"]]
+    numeric_data_for_charts["Utilization"] = [all_metrics[algo]["avg_machine_utilization"] for algo in ["FIFO", "SPT", "GA"]]
 
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Makespan Comparison")
-        makespan_data = {
-            "Algorithm": ["FIFO", "SPT", "GA"],
-            "Makespan": [metrics_data_numeric["FIFO"][0], metrics_data_numeric["SPT"][0], metrics_data_numeric["GA"][0]]
+        # Filter out None values for makespan chart
+        valid_makespan_data = {
+            "Algorithm": [a for a, m in zip(numeric_data_for_charts["Algorithm"], numeric_data_for_charts["Makespan"]) if m is not None],
+            "Makespan": [m for m in numeric_data_for_charts["Makespan"] if m is not None]
         }
-        st.bar_chart(pd.DataFrame(makespan_data).set_index("Algorithm"))
+        if valid_makespan_data["Makespan"]:
+            makespan_df = pd.DataFrame(valid_makespan_data).set_index("Algorithm")
+            st.bar_chart(makespan_df)
+        else: st.info("No makespan data to plot.")
     
     with col2:
         st.subheader("Machine Utilization Comparison")
-        util_data = {
-            "Algorithm": ["FIFO", "SPT", "GA"],
-            "Utilization": [metrics_data_numeric["FIFO"][3], metrics_data_numeric["SPT"][3], metrics_data_numeric["GA"][3]]
+        # Filter out None values for utilization chart
+        valid_util_data = {
+            "Algorithm": [a for a, u in zip(numeric_data_for_charts["Algorithm"], numeric_data_for_charts["Utilization"]) if u is not None],
+            "Utilization": [u for u in numeric_data_for_charts["Utilization"] if u is not None]
         }
-        st.bar_chart(pd.DataFrame(util_data).set_index("Algorithm"))
+        if valid_util_data["Utilization"]:
+            util_df = pd.DataFrame(valid_util_data).set_index("Algorithm")
+            st.bar_chart(util_df)
+        else: st.info("No utilization data to plot.")
 
-    if "best_makespan_history" in ga_metrics: # ga_metrics is clean
+    ga_metrics_clean = ga_metrics
+    if "best_makespan_history" in ga_metrics_clean:
         st.subheader("GA Convergence")
-        history = ga_metrics["best_makespan_history"] # Should be a list of numbers
-        history_df = pd.DataFrame({"Generation": list(range(len(history))), "Best Makespan": history})
-        st.line_chart(history_df.set_index("Generation"))
+        history = ga_metrics_clean["best_makespan_history"]
+        if history and isinstance(history, list) and all(isinstance(x, (int, float)) for x in history):
+            history_df = pd.DataFrame({"Generation": list(range(len(history))), "Best Makespan": history})
+            st.line_chart(history_df.set_index("Generation"))
+        else:
+            st.warning("GA history data not plottable or unavailable.")
 
 def display_gantt_charts(results: Dict):
     st.header("Gantt Charts")
@@ -231,7 +233,7 @@ def display_gantt_charts(results: Dict):
 def create_gantt_chart(schedule: List[Dict[str, Any]], algorithm: str, makespan: int, num_machines: int) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(12, 6)) # Adjusted size
     
-    job_ids = sorted(list(set(op["job_id"] for op in schedule)))
+    job_ids = sorted(list(set(op["job_id"] for op in schedule if op.get("job_id") is not None)))
     num_jobs = len(job_ids)
     
     # Use matplotlib.colormaps for modern API
@@ -239,13 +241,15 @@ def create_gantt_chart(schedule: List[Dict[str, Any]], algorithm: str, makespan:
     job_colors = {job_id: cmap(i % cmap.N) for i, job_id in enumerate(job_ids)}
 
     for op in schedule:
-        job_id, machine_id, start, duration = op["job_id"], op["machine_id"], op["start_time"], op["processing_time"]
-        rect = patches.Rectangle(
-            (start, machine_id - 0.4), duration, 0.8,
-            linewidth=1, edgecolor='black', facecolor=job_colors.get(job_id, 'gray'), alpha=0.7
-        )
-        ax.add_patch(rect)
-        ax.text(start + duration / 2, machine_id, f"J{job_id}", ha='center', va='center', fontsize=8, color='black')
+        job_id, machine_id = op.get("job_id"), op.get("machine_id")
+        start, duration = op.get("start_time"), op.get("processing_time")
+        if None not in [job_id, machine_id, start, duration]:
+            rect = patches.Rectangle(
+                (start, machine_id - 0.4), duration, 0.8,
+                linewidth=1, edgecolor='black', facecolor=job_colors.get(job_id, 'gray'), alpha=0.7
+            )
+            ax.add_patch(rect)
+            ax.text(start + duration / 2, machine_id, f"J{job_id}", ha='center', va='center', fontsize=8, color='black')
     
     ax.set_xlim(0, makespan * 1.05 if makespan > 0 else 10)
     ax.set_ylim(-0.5, num_machines - 0.5 if num_machines > 0 else 0.5)
