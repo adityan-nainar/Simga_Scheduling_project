@@ -8,7 +8,7 @@ import json
 import io
 from base64 import b64encode
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 from jssp_sim.core.instance import Instance, Operation
 from jssp_sim.core.params import GAParams
@@ -28,6 +28,31 @@ class NumpyJSONEncoder(json.JSONEncoder):
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
+
+
+# Helper function to convert NumPy types to standard Python types
+def convert_numpy_types(obj: Any) -> Any:
+    """
+    Recursively convert NumPy types to standard Python types.
+    
+    Args:
+        obj: Object to convert
+        
+    Returns:
+        Converted object with standard Python types
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        return [convert_numpy_types(i) for i in obj]
+    else:
+        return obj
 
 
 def main():
@@ -81,29 +106,14 @@ def main():
             )
             metrics_ga, schedule_ga = run_ga(instance, ga_params)
             
-            # Helper function to convert NumPy types to standard Python types
-            def convert_numpy_types(obj):
-                if isinstance(obj, np.integer):
-                    return int(obj)
-                elif isinstance(obj, np.floating):
-                    return float(obj)
-                elif isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                elif isinstance(obj, dict):
-                    return {k: convert_numpy_types(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [convert_numpy_types(i) for i in obj]
-                else:
-                    return obj
-            
             # Convert metrics to standard Python types
             metrics_fifo = convert_numpy_types(metrics_fifo)
             metrics_spt = convert_numpy_types(metrics_spt)
             metrics_ga = convert_numpy_types(metrics_ga)
             
-            # Store results in session state
-            st.session_state.results = {
-                "instance": instance.to_dict(),
+            # Prepare the results dictionary with explicitly converted types
+            results = {
+                "instance": convert_numpy_types(instance.to_dict()),
                 "fifo": {
                     "metrics": metrics_fifo,
                     "schedule": [
@@ -142,9 +152,16 @@ def main():
                         }
                         for op in schedule_ga
                     ],
-                    "params": ga_params.to_dict()
+                    "params": convert_numpy_types(ga_params.to_dict())
                 }
             }
+            
+            # Clear existing session state to avoid any lingering NumPy values
+            if "results" in st.session_state:
+                del st.session_state["results"]
+                
+            # Store results in session state after one more conversion to ensure no NumPy types remain
+            st.session_state.results = convert_numpy_types(results)
         
         st.success("Simulation completed!")
         
@@ -152,6 +169,8 @@ def main():
         display_results(st.session_state.results)
     elif "results" in st.session_state:
         # If we've already run a simulation, display the results
+        # Make sure the results are fully converted
+        st.session_state.results = convert_numpy_types(st.session_state.results)
         display_results(st.session_state.results)
     else:
         # First time loading the app
@@ -160,6 +179,9 @@ def main():
 
 def display_results(results: Dict):
     """Display the results of the simulation."""
+    # Convert any NumPy types that might still be present
+    results = convert_numpy_types(results)
+    
     # Create tabs for different views
     tab1, tab2, tab3 = st.tabs(["Metrics Comparison", "Gantt Charts", "Raw Data"])
     
@@ -175,6 +197,9 @@ def display_results(results: Dict):
 
 def display_metrics_comparison(results: Dict):
     """Display a comparison of metrics between algorithms."""
+    # Convert any NumPy types that might still be present
+    results = convert_numpy_types(results)
+    
     st.header("Metrics Comparison")
     
     # Extract metrics
@@ -252,6 +277,9 @@ def display_metrics_comparison(results: Dict):
 
 def display_gantt_charts(results: Dict):
     """Display Gantt charts for all algorithms."""
+    # Convert any NumPy types that might still be present
+    results = convert_numpy_types(results)
+    
     st.header("Gantt Charts")
     
     col1, col2, col3 = st.columns(3)
@@ -368,6 +396,9 @@ def get_image_download_link(fig):
 
 def display_raw_data(results: Dict):
     """Display the raw data for all algorithms."""
+    # Convert any NumPy types that might still be present
+    results = convert_numpy_types(results)
+    
     st.header("Raw Data")
     
     # Create tabs for each algorithm
