@@ -1,7 +1,7 @@
 import time
 import random
 import numpy as np
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Set
 from copy import deepcopy
 
 from jssp_sim.core.instance import Instance, Operation
@@ -10,155 +10,132 @@ from jssp_sim.core.metrics import calculate_metrics, validate_schedule
 
 
 class Chromosome:
-    """Represents a single chromosome in the genetic algorithm."""
+    """
+    Represents a chromosome in the genetic algorithm.
     
-    def __init__(self, operations: List[Operation], makespan: float = None):
-        self.operations = operations
-        self.makespan = makespan  # Fitness value
+    This uses a job-based encoding where each chromosome is a permutation of job indices.
+    This encoding ensures that job precedence constraints are always respected.
+    """
+    
+    def __init__(self, job_sequence: List[int], instance: Instance = None):
+        """
+        Create a new chromosome.
         
-    def evaluate(self, instance: Instance):
-        """Evaluate the chromosome and calculate its fitness (makespan)."""
-        try:
-            ops_copy = self._decode(instance)
-            metrics = calculate_metrics(instance, ops_copy)
-            self.makespan = metrics["makespan"]
-            return self.makespan
-        except (ValueError, TypeError) as e:
-            # Return a very high makespan for invalid schedules
-            self.makespan = float('inf')
-            return self.makespan
+        Args:
+            job_sequence: List of job IDs representing the order of priority for scheduling
+            instance: The problem instance (needed for evaluation)
+        """
+        self.job_sequence = job_sequence
+        self.instance = instance
+        self.makespan = None
+        self.schedule = None
     
-    def _decode(self, instance: Instance) -> List[Operation]:
+    def evaluate(self, instance: Instance = None):
+        """
+        Evaluate the chromosome and calculate its fitness (makespan).
+        
+        Args:
+            instance: The problem instance to evaluate against
+        """
+        if instance is not None:
+            self.instance = instance
+            
+        if self.instance is None:
+            raise ValueError("Cannot evaluate without an instance")
+        
+        operations, makespan = self._decode()
+        self.makespan = makespan
+        self.schedule = operations
+        return self.makespan
+    
+    def _decode(self) -> Tuple[List[Operation], int]:
         """
         Decode the chromosome into a feasible schedule.
         
-        This converts the operation sequence into a schedule with
-        start and end times for each operation, respecting both
-        job precedence and machine capacity constraints.
+        This uses a priority-based scheduling heuristic where jobs are considered
+        in the order specified by the chromosome's job sequence.
         
-        Args:
-            instance: The problem instance to decode against (used for validation)
-            
         Returns:
-            List of scheduled operations
+            Tuple of (operations, makespan)
         """
-        # Make a deep copy of operations to avoid modifying the original
-        operations = deepcopy(self.operations)
+        # Create a deep copy of the instance
+        instance = deepcopy(self.instance)
         
-        # Extract job and machine count from operations
-        job_ids = set(op.job_id for op in operations)
-        machine_ids = set(op.machine_id for op in operations)
+        # Create a list of operations for each job, sorted by machine_id
+        job_operations = {}
+        for job in instance.jobs:
+            job_operations[job.job_id] = sorted(list(job.operations), key=lambda op: op.machine_id)
         
-        # Keep track of when each machine will be free
-        machine_availability = {m: 0 for m in machine_ids}
+        # Keep track of the next operation to schedule for each job
+        job_op_index = {job_id: 0 for job_id in range(instance.num_jobs)}
         
-        # Track the last scheduled operation's end time for each job
-        job_last_op_end_times = {j: 0 for j in job_ids}
+        # Keep track of when each machine and job will next be available
+        machine_availability = {m: 0 for m in range(instance.num_machines)}
+        job_availability = {j: 0 for j in range(instance.num_jobs)}
         
-        # Dictionary to map job and machine to operation
-        # This helps track machine sequence within each job
-        job_machine_ops = {j: {} for j in job_ids}
-        for op in operations:
-            if op.machine_id not in job_machine_ops[op.job_id]:
-                job_machine_ops[op.job_id][op.machine_id] = op
-        
-        # Sort operations within each job by machine_id (to match validation)
+        # List of all scheduled operations
         scheduled_ops = []
-        machine_schedules = {m: [] for m in machine_ids}
         
-        # Process operations in the order given by the chromosome
-        for op in operations:
-            # Get the job and machine IDs
-            job_id = op.job_id
-            machine_id = op.machine_id
+        # Keep scheduling until all operations are scheduled
+        remaining_ops = sum(len(ops) for ops in job_operations.values())
+        
+        while remaining_ops > 0:
+            # List of jobs that have operations ready to be scheduled
+            available_jobs = []
             
-            # Determine the earliest start time based on job precedence
-            # The operation can't start until its job's previous operations are done
-            job_ready_time = job_last_op_end_times.get(job_id, 0)
+            # Check each job to see if it has an operation ready
+            for job_id in self.job_sequence:
+                # If this job has no more operations, skip it
+                if job_op_index[job_id] >= len(job_operations[job_id]):
+                    continue
+                
+                # Get the next operation for this job
+                next_op = job_operations[job_id][job_op_index[job_id]]
+                
+                # This job has an operation ready to be scheduled
+                available_jobs.append(job_id)
             
-            # Determine the earliest start time based on machine availability
-            machine_ready_time = machine_availability.get(machine_id, 0)
+            if not available_jobs:
+                # This should never happen if our logic is correct
+                break
             
-            # The operation can start as soon as both the job and machine are ready
-            start_time = max(job_ready_time, machine_ready_time)
+            # Take the highest priority job from the available ones
+            # (first one in the job_sequence that is available)
+            selected_job = None
+            for job_id in self.job_sequence:
+                if job_id in available_jobs:
+                    selected_job = job_id
+                    break
             
-            # Set the operation's schedule
-            op.start_time = start_time
-            op.end_time = start_time + op.processing_time
+            # Get the next operation for the selected job
+            op = job_operations[selected_job][job_op_index[selected_job]]
             
-            # Update when this job and machine will next be available
-            job_last_op_end_times[job_id] = op.end_time
-            machine_availability[machine_id] = op.end_time
+            # Calculate the earliest possible start time
+            # It must wait for both the job's previous operation and the machine to be free
+            earliest_start = max(
+                job_availability[op.job_id],         # When this job will be available
+                machine_availability[op.machine_id]  # When this machine will be available
+            )
             
-            # Add to the scheduled operations and the machine's schedule
+            # Schedule the operation
+            op.start_time = earliest_start
+            op.end_time = earliest_start + op.processing_time
+            
+            # Update availability times
+            job_availability[op.job_id] = op.end_time
+            machine_availability[op.machine_id] = op.end_time
+            
+            # Add to scheduled operations
             scheduled_ops.append(op)
-            machine_schedules[machine_id].append(op)
-        
-        # After initial scheduling, we need to resolve any conflicts
-        # For each machine, ensure operations don't overlap
-        for machine_id in machine_ids:
-            # Sort operations on this machine by start time
-            machine_ops = machine_schedules[machine_id]
-            machine_ops.sort(key=lambda op: op.start_time)
             
-            # Fix any overlaps
-            for i in range(1, len(machine_ops)):
-                prev_op = machine_ops[i-1]
-                curr_op = machine_ops[i]
-                
-                # If there's an overlap, push the current operation later
-                if curr_op.start_time < prev_op.end_time:
-                    # Adjust the current operation's times
-                    curr_op.start_time = prev_op.end_time
-                    curr_op.end_time = curr_op.start_time + curr_op.processing_time
-                    
-                    # Update when this job will be available next
-                    job_last_op_end_times[curr_op.job_id] = max(
-                        job_last_op_end_times[curr_op.job_id], 
-                        curr_op.end_time
-                    )
+            # Move to the next operation for this job
+            job_op_index[selected_job] += 1
+            remaining_ops -= 1
         
-        # Now ensure job precedence constraints are met
-        # For each job, sort operations by machine_id (as validation does)
-        for job_id in job_ids:
-            job_ops = [op for op in scheduled_ops if op.job_id == job_id]
-            job_ops.sort(key=lambda op: op.machine_id)
-            
-            # Check precedence between operations
-            for i in range(1, len(job_ops)):
-                prev_op = job_ops[i-1]
-                curr_op = job_ops[i]
-                
-                # If current op starts before previous op ends, adjust it
-                if curr_op.start_time < prev_op.end_time:
-                    curr_op.start_time = prev_op.end_time
-                    curr_op.end_time = curr_op.start_time + curr_op.processing_time
-                    
-                    # Need to check machine constraints again for this modified operation
-                    machine_id = curr_op.machine_id
-                    machine_ops = [op for op in scheduled_ops if op.machine_id == machine_id and op != curr_op]
-                    
-                    # Sort operations on this machine by start time
-                    machine_ops.sort(key=lambda op: op.start_time)
-                    
-                    # Find where our current op fits in this sequence
-                    insert_idx = 0
-                    while insert_idx < len(machine_ops) and machine_ops[insert_idx].start_time < curr_op.start_time:
-                        insert_idx += 1
-                    
-                    # Check if we need to adjust due to the operation before us
-                    if insert_idx > 0 and machine_ops[insert_idx-1].end_time > curr_op.start_time:
-                        curr_op.start_time = machine_ops[insert_idx-1].end_time
-                        curr_op.end_time = curr_op.start_time + curr_op.processing_time
-                    
-                    # Check if we need to adjust operations after us
-                    if insert_idx < len(machine_ops):
-                        next_op = machine_ops[insert_idx]
-                        if next_op.start_time < curr_op.end_time:
-                            next_op.start_time = curr_op.end_time
-                            next_op.end_time = next_op.start_time + next_op.processing_time
+        # Calculate makespan (maximum end time)
+        makespan = max(op.end_time for op in scheduled_ops) if scheduled_ops else 0
         
-        return scheduled_ops
+        return scheduled_ops, makespan
 
 
 def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Operation]]:
@@ -173,7 +150,6 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
         Tuple of (metrics, scheduled_operations)
     """
     start_time = time.time()
-    max_retries = 3  # Number of times to retry if validation fails
     
     # Create a deep copy of the instance to avoid modifying the original
     copied_instance = deepcopy(instance)
@@ -181,114 +157,84 @@ def run_ga(instance: Instance, params: GAParams = None) -> Tuple[Dict, List[Oper
     if params is None:
         params = GAParams()
     
-    for retry in range(max_retries):
-        try:
-            # Create a population of random chromosomes
-            population = _initialize_population(copied_instance, params.population_size)
-            
-            # Evaluate the initial population
-            for chromosome in population:
-                chromosome.evaluate(copied_instance)
-            
-            # Best solution found so far
-            best_solution = min(population, key=lambda c: c.makespan)
-            best_makespan = best_solution.makespan
-            
-            # History of best makespan values (for analysis)
-            history = [best_makespan]
-            
-            # Main GA loop
-            for generation in range(params.generations):
-                # Create the next generation
-                next_population = []
-                
-                # Elitism: keep the best solutions
-                elite_count = int(params.population_size * params.elitism_rate)
-                elite = sorted(population, key=lambda c: c.makespan)[:elite_count]
-                next_population.extend(elite)
-                
-                # Fill the rest with crossover and mutation
-                while len(next_population) < params.population_size:
-                    # Selection
-                    parent1 = _tournament_selection(population, params.tournament_size)
-                    parent2 = _tournament_selection(population, params.tournament_size)
-                    
-                    # Crossover
-                    if random.random() < params.crossover_rate:
-                        offspring = _crossover(parent1, parent2)
-                    else:
-                        # No crossover, just copy one parent
-                        offspring = Chromosome(deepcopy(parent1.operations))
-                    
-                    # Mutation
-                    if random.random() < params.mutation_rate:
-                        _mutate(offspring)
-                    
-                    # Evaluate the new solution
-                    offspring.evaluate(copied_instance)
-                    
-                    # Add to the next generation
-                    next_population.append(offspring)
-                
-                # Replace the current population
-                population = next_population
-                
-                # Update the best solution
-                current_best = min(population, key=lambda c: c.makespan)
-                if current_best.makespan < best_makespan:
-                    best_solution = current_best
-                    best_makespan = current_best.makespan
-                
-                # Record history
-                history.append(best_makespan)
-            
-            # Calculate CPU time
-            cpu_time = time.time() - start_time
-            
-            # Get the best solution
-            best_chromosome = min(population, key=lambda c: c.makespan)
-            
-            # If the best chromosome has infinite makespan, we have no valid solutions
-            if best_chromosome.makespan == float('inf'):
-                if retry < max_retries - 1:
-                    print(f"No valid solutions found in run {retry+1}, retrying...")
-                    continue
-                else:
-                    raise ValueError("Could not find a valid solution after multiple retries")
-                    
-            best_schedule = best_chromosome._decode(copied_instance)
-            
-            # Validate the schedule - this might raise exceptions that trigger a retry
-            validate_schedule(copied_instance, best_schedule)
-            
-            # Calculate metrics
-            metrics = calculate_metrics(copied_instance, best_schedule)
-            metrics["algorithm"] = "GA"
-            metrics["cpu_time"] = cpu_time
-            metrics["generations"] = params.generations
-            metrics["population_size"] = params.population_size
-            metrics["best_makespan_history"] = history
-            metrics["retries"] = retry
-            
-            # If we get here, we have a valid solution
-            return metrics, best_schedule
-            
-        except ValueError as e:
-            if retry < max_retries - 1:
-                print(f"Validation error on run {retry+1}: {str(e)}. Retrying...")
-                # Increase population size and generations for next retry
-                if params:
-                    params.population_size = int(params.population_size * 1.5)
-                    params.generations = int(params.generations * 1.5)
-                # Reset the random seed to get different results
-                random_seed = random.randint(1, 10000)
-                random.seed(random_seed)
-                np.random.seed(random_seed)
-            else:
-                raise ValueError(f"Failed to find a valid solution after {max_retries} retries: {str(e)}")
+    # Create a population of random chromosomes
+    population = _initialize_population(copied_instance, params.population_size)
     
-    # Should never reach here due to exception handling
-    raise ValueError("Could not find a valid solution")
+    # Evaluate the initial population
+    for chromosome in population:
+        chromosome.evaluate(copied_instance)
+    
+    # Best solution found so far
+    best_solution = min(population, key=lambda c: c.makespan)
+    best_makespan = best_solution.makespan
+    
+    # History of best makespan values (for analysis)
+    history = [best_makespan]
+    
+    # Main GA loop
+    for generation in range(params.generations):
+        # Create the next generation
+        next_population = []
+        
+        # Elitism: keep the best solutions
+        elite_count = max(1, int(params.population_size * params.elitism_rate))
+        elite = sorted(population, key=lambda c: c.makespan)[:elite_count]
+        next_population.extend(elite)
+        
+        # Fill the rest with crossover and mutation
+        while len(next_population) < params.population_size:
+            # Selection
+            parent1 = _tournament_selection(population, params.tournament_size)
+            parent2 = _tournament_selection(population, params.tournament_size)
+            
+            # Crossover
+            if random.random() < params.crossover_rate:
+                offspring = _crossover(parent1, parent2)
+            else:
+                # No crossover, just copy one parent
+                offspring = Chromosome(deepcopy(parent1.job_sequence), copied_instance)
+            
+            # Mutation
+            if random.random() < params.mutation_rate:
+                _mutate(offspring)
+            
+            # Evaluate the new solution
+            offspring.evaluate(copied_instance)
+            
+            # Add to the next generation
+            next_population.append(offspring)
+        
+        # Replace the current population
+        population = next_population
+        
+        # Update the best solution
+        current_best = min(population, key=lambda c: c.makespan)
+        if current_best.makespan < best_makespan:
+            best_solution = current_best
+            best_makespan = current_best.makespan
+        
+        # Record history
+        history.append(best_makespan)
+    
+    # Calculate CPU time
+    cpu_time = time.time() - start_time
+    
+    # Get the best solution
+    best_chromosome = min(population, key=lambda c: c.makespan)
+    best_schedule = best_chromosome.schedule
+    
+    # Extra validation - should always pass with this encoding
+    validate_schedule(copied_instance, best_schedule)
+    
+    # Calculate metrics
+    metrics = calculate_metrics(copied_instance, best_schedule)
+    metrics["algorithm"] = "GA"
+    metrics["cpu_time"] = cpu_time
+    metrics["generations"] = params.generations
+    metrics["population_size"] = params.population_size
+    metrics["best_makespan_history"] = history
+    
+    return metrics, best_schedule
 
 
 def _initialize_population(instance: Instance, population_size: int) -> List[Chromosome]:
@@ -304,13 +250,16 @@ def _initialize_population(instance: Instance, population_size: int) -> List[Chr
     """
     population = []
     
+    # Get the number of jobs
+    num_jobs = instance.num_jobs
+    
     for _ in range(population_size):
-        # Create a random permutation of operations
-        operations = deepcopy(instance.operations)
-        random.shuffle(operations)
+        # Create a random permutation of job indices
+        job_sequence = list(range(num_jobs))
+        random.shuffle(job_sequence)
         
-        # Create a chromosome from the permutation
-        chromosome = Chromosome(operations)
+        # Create a chromosome
+        chromosome = Chromosome(job_sequence, instance)
         population.append(chromosome)
     
     return population
@@ -336,10 +285,9 @@ def _tournament_selection(population: List[Chromosome], tournament_size: int) ->
 
 def _crossover(parent1: Chromosome, parent2: Chromosome) -> Chromosome:
     """
-    Perform crossover between two parent chromosomes.
+    Perform Order Crossover (OX) between two parent chromosomes.
     
-    This implements the Precedence Operation Crossover (POX) which preserves the
-    relative order of operations within jobs.
+    This preserves the relative order of jobs in the sequence.
     
     Args:
         parent1: First parent chromosome
@@ -348,47 +296,49 @@ def _crossover(parent1: Chromosome, parent2: Chromosome) -> Chromosome:
     Returns:
         New offspring chromosome
     """
-    p1_ops = parent1.operations
-    p2_ops = parent2.operations
+    p1_seq = parent1.job_sequence
+    p2_seq = parent2.job_sequence
+    size = len(p1_seq)
     
-    # Extract job IDs
-    job_ids = set(op.job_id for op in p1_ops)
+    # Select two random crossover points
+    cx_point1 = random.randint(0, size - 2)
+    cx_point2 = random.randint(cx_point1 + 1, size - 1)
     
-    # Randomly select jobs to inherit from parent1
-    job_count = len(job_ids)
-    jobs_from_p1 = set(random.sample(list(job_ids), job_count // 2))
+    # Initialize the offspring with a copy of the segment from parent1
+    offspring_seq = [-1] * size
+    for i in range(cx_point1, cx_point2 + 1):
+        offspring_seq[i] = p1_seq[i]
     
-    # Create offspring
-    offspring_ops = []
+    # Fill the remaining positions with elements from parent2 in order
+    p2_idx = 0
+    for i in range(size):
+        if offspring_seq[i] == -1:  # Position needs to be filled
+            # Find the next element in parent2 that's not already in offspring
+            while p2_seq[p2_idx] in offspring_seq:
+                p2_idx += 1
+            offspring_seq[i] = p2_seq[p2_idx]
+            p2_idx += 1
     
-    # First, inherit selected jobs from parent1 (maintain their relative order)
-    for op in p1_ops:
-        if op.job_id in jobs_from_p1:
-            offspring_ops.append(op)
-    
-    # Then, inherit remaining jobs from parent2 (maintain their relative order)
-    for op in p2_ops:
-        if op.job_id not in jobs_from_p1:
-            offspring_ops.append(op)
-    
-    return Chromosome(offspring_ops)
+    # Create the offspring with the new sequence
+    return Chromosome(offspring_seq, parent1.instance)
 
 
 def _mutate(chromosome: Chromosome) -> None:
     """
-    Mutate a chromosome in place.
-    
-    Performs a swap mutation by selecting two random positions
-    and swapping the operations at those positions.
+    Mutate a chromosome in place using a swap mutation.
     
     Args:
         chromosome: The chromosome to mutate
     """
-    if len(chromosome.operations) <= 1:
+    # Get the job sequence
+    seq = chromosome.job_sequence
+    size = len(seq)
+    
+    if size <= 1:
         return
     
     # Select two random positions
-    pos1, pos2 = random.sample(range(len(chromosome.operations)), 2)
+    pos1, pos2 = random.sample(range(size), 2)
     
-    # Swap the operations
-    chromosome.operations[pos1], chromosome.operations[pos2] = chromosome.operations[pos2], chromosome.operations[pos1] 
+    # Swap the jobs at these positions
+    seq[pos1], seq[pos2] = seq[pos2], seq[pos1] 
