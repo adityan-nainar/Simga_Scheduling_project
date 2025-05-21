@@ -163,34 +163,61 @@ def display_metrics_comparison(results: Dict):
     spt_metrics = results["spt"]["metrics"]
     ga_metrics = results["ga"]["metrics"]
     
-    # Create a comparison table
+    # Create a comparison table - use numeric values directly, not formatted strings
     metrics_data = {
         "Metric": ["Makespan", "Total Flow Time", "Avg Flow Time", "Avg Machine Utilization", "CPU Time (s)"],
         "FIFO": [
             fifo_metrics["makespan"],
             fifo_metrics["total_flow_time"],
             fifo_metrics["avg_flow_time"],
-            f"{fifo_metrics['avg_machine_utilization']:.2f}",
-            f"{fifo_metrics['cpu_time']:.4f}"
+            fifo_metrics["avg_machine_utilization"],
+            fifo_metrics["cpu_time"]
         ],
         "SPT": [
             spt_metrics["makespan"],
             spt_metrics["total_flow_time"],
             spt_metrics["avg_flow_time"],
-            f"{spt_metrics['avg_machine_utilization']:.2f}",
-            f"{spt_metrics['cpu_time']:.4f}"
+            spt_metrics["avg_machine_utilization"],
+            spt_metrics["cpu_time"]
         ],
         "GA": [
             ga_metrics["makespan"],
             ga_metrics["total_flow_time"],
             ga_metrics["avg_flow_time"],
-            f"{ga_metrics['avg_machine_utilization']:.2f}",
-            f"{ga_metrics['cpu_time']:.4f}"
+            ga_metrics["avg_machine_utilization"],
+            ga_metrics["cpu_time"]
         ]
     }
     
     metrics_df = pd.DataFrame(metrics_data)
-    st.dataframe(metrics_df, use_container_width=True)
+    
+    # Format the display dataframe separately for display purposes
+    display_df = pd.DataFrame({
+        "Metric": metrics_data["Metric"],
+        "FIFO": [
+            metrics_data["FIFO"][0],
+            metrics_data["FIFO"][1],
+            metrics_data["FIFO"][2],
+            f"{metrics_data['FIFO'][3]:.2f}",
+            f"{metrics_data['FIFO'][4]:.4f}"
+        ],
+        "SPT": [
+            metrics_data["SPT"][0],
+            metrics_data["SPT"][1],
+            metrics_data["SPT"][2],
+            f"{metrics_data['SPT'][3]:.2f}",
+            f"{metrics_data['SPT'][4]:.4f}"
+        ],
+        "GA": [
+            metrics_data["GA"][0],
+            metrics_data["GA"][1],
+            metrics_data["GA"][2],
+            f"{metrics_data['GA'][3]:.2f}",
+            f"{metrics_data['GA'][4]:.4f}"
+        ]
+    })
+    
+    st.dataframe(display_df, use_container_width=True)
     
     # Create some bar charts for visualization
     col1, col2 = st.columns(2)
@@ -286,7 +313,8 @@ def create_gantt_chart(schedule: List[Dict], algorithm: str, makespan: int, num_
     num_jobs = len(set(op["job_id"] for op in schedule))
     
     # Define colors for jobs (using a colormap)
-    colors = plt.cm.get_cmap('tab20', num_jobs)
+    # Fix the deprecation warning by using matplotlib.colormaps
+    colors = plt.colormaps.get_cmap('tab20', num_jobs)
     
     # Plot each operation as a rectangle
     for op in schedule:
