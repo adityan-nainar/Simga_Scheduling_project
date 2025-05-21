@@ -27,6 +27,8 @@ class NumpyJSONEncoder(json.JSONEncoder):
             return float(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
+        elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.number):
+            return float(obj) if np.issubdtype(obj.dtype, np.floating) else int(obj)
         return super().default(obj)
 
 
@@ -47,6 +49,8 @@ def convert_numpy_types(obj: Any) -> Any:
         return float(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
+    elif hasattr(obj, 'dtype') and np.issubdtype(obj.dtype, np.number):
+        return float(obj) if np.issubdtype(obj.dtype, np.floating) else int(obj)
     elif isinstance(obj, dict):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     elif isinstance(obj, list) or isinstance(obj, tuple):
@@ -396,8 +400,16 @@ def get_image_download_link(fig):
 
 def display_raw_data(results: Dict):
     """Display the raw data for all algorithms."""
-    # Convert any NumPy types that might still be present
-    results = convert_numpy_types(results)
+    # Ensure all values are primitive Python types, not NumPy types
+    # Use json serialization and deserialization as a guaranteed way to convert all values
+    try:
+        # This double conversion ensures we get rid of all NumPy types
+        results_str = json.dumps(results, cls=NumpyJSONEncoder)
+        results = json.loads(results_str)
+    except TypeError as e:
+        st.error(f"Error converting results to JSON: {e}")
+        st.error("This is likely due to NumPy types in the results dictionary.")
+        return
     
     st.header("Raw Data")
     
@@ -422,8 +434,8 @@ def display_raw_data(results: Dict):
     with download_tab:
         st.subheader("Download Results")
         
-        # Create JSON download - use the custom encoder
-        json_data = json.dumps(results, indent=2, cls=NumpyJSONEncoder)
+        # Create JSON download - no need for custom encoder since we've already converted
+        json_data = json.dumps(results, indent=2)
         st.download_button(
             label="Download JSON",
             data=json_data,
