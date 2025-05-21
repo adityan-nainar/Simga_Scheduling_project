@@ -235,12 +235,12 @@ def create_gantt_chart(schedule: List[Dict[str, Any]], algorithm: str, makespan:
     job_ids = sorted(list(set(op.get("job_id") for op in schedule if op.get("job_id") is not None)))
     num_jobs = len(job_ids)
     
-    # Corrected: plt.colormaps.get_cmap() takes only the colormap name.
+    # Corrected: Use direct dictionary-style access plt.colormaps['colormap_name']
     try:
-        cmap = plt.colormaps.get_cmap('tab20') 
+        cmap = plt.colormaps['tab20'] 
     except KeyError: 
         # Fallback if 'tab20' is somehow not available.
-        cmap = plt.colormaps.get_cmap('viridis') 
+        cmap = plt.colormaps['viridis'] 
         
     # Sample colors from the chosen colormap.
     # cmap.N gives the number of defined colors in a discrete colormap like 'tab20'.
